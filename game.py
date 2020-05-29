@@ -43,9 +43,30 @@ class User:
         self.playlists = self.spotify_obj.user_playlists(username)
 
 
+class Playlist:
+    def __init__(self, playlist, spotify_obj):  # accepts a playlist dictionary
+        self.name = playlist["name"]
+        self.id = playlist["id"]
+        self.tracks = spotify_obj.playlist_tracks(self.id)
+        self.song_names = [track["track"]["name"] for track in self.tracks["items"]]
+
+    def get_random_song(self):
+        return Song(self)
+
+
+class Song:
+    def __init__(self, playlist):  # accepts a Playlist object
+        self.num_songs = len(playlist.tracks["items"])
+        self.index = random.randint(0, self.num_songs-1)
+
+
 # https://developer.spotify.com/documentation/general/guides/scopes/
 scopes = "user-follow-read user-library-read playlist-read-private"
-user = User("SoySoy4444", scopes)
+try:
+    user = User("SoySoy4444", scopes)
+except SpotifyException:
+    print("Not a valid username!")
+
 user_playlists = user.playlists
 playlists_names_list = [playlist["name"] for playlist in user_playlists["items"]]
 
@@ -54,3 +75,28 @@ print(f"You have {user.followers} followers.")
 print("You have the following playlists: ")
 print(playlists_names_list)
 print()
+
+# Generate random playlist
+index = random.randint(0, len(user_playlists["items"])-1)
+random_playlist = user_playlists["items"][index]
+current_playlist = Playlist(random_playlist, user.spotify_obj)
+
+print(f"Starting quiz on... {current_playlist.name}!")
+print(current_playlist.song_names)
+
+if __name__ == "__main__":
+    while (x := input("Enter: ")) != "q":
+        print("Hi")
+        if x.startswith("!user"):
+            usernames = x.split(" ")[1:]
+            print(usernames)
+        elif x.startswith("!playlist"):
+            playlist_uri = x.split(" ")[1]
+            print("Ok")
+        elif x.startswith("!featured"):
+            oath = spotipy.oauth2.SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+            token = oath.get_access_token(as_dict=False)
+            client = spotipy.client.Spotify(auth=token)
+
+            featured_playlists = client.featured_playlists()
+            print(json.dumps(featured_playlists, indent=4))
