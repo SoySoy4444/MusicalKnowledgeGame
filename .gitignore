@@ -1,0 +1,6 @@
+.env
+.DS_Store
+.idea
+
+#Ignore Spotipy token cache files for all users
+*.cache*
