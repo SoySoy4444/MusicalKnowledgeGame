@@ -4,3 +4,6 @@
 
 #Ignore Spotipy token cache files for all users
 *.cache*
+
+#Don't add songs
+*.mp3

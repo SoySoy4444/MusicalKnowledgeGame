@@ -1,11 +1,17 @@
 import os
-import json
 import spotipy
 import spotipy.util as util
 from spotipy import SpotifyException
 from dotenv import load_dotenv
 import random
 from discord.ext import commands
+from discord.errors import ClientException
+import youtube_dl
+import discord
+import requests
+from requests.utils import requote_uri
+from bs4 import BeautifulSoup
+import re
 
 load_dotenv()
 CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
@@ -76,10 +82,11 @@ class Song:
 
         self.used_songs_indices = [self.index]  # stores the indices of songs used for the correct answer and decoys
 
-    def get_random_question(self):
+    async def get_random_question(self, message):
         questions = {
             0: (f"Who is the artist of {self.name}?", " & ".join(self.artist_names)),
             1: (f"What is the album name of {self.name}?", self.album),
+            2: ("What is the name of the song currently playing?", self.name)
         }
         question_type = random.randint(0, len(questions) - 1)
         random_question = questions[question_type][0]
@@ -104,14 +111,19 @@ class Song:
                 answers_list.append(choices[i] + " & ".join(random_song_artists))
             elif question_type == 1:
                 answers_list.append(choices[i] + random_song["track"]["album"]["name"])
+            elif question_type == 2:
+                answers_list.append(choices[i] + random_song["track"]["name"])
+
+        if question_type == 2:
+            await play(message, self.name+" ".join(self.artist_names))
 
         return random_question, answers_list, correct_answer_index
 
 
-async def next_question(playlist_obj, channel):  # accepts a Playlist object
+async def next_question(playlist_obj, channel, message):  # accepts a Playlist object
     song = playlist_obj.get_random_song()
     global correct_answer
-    question, answer_choices, correct_index = song.get_random_question()
+    question, answer_choices, correct_index = await song.get_random_question(message)
 
     correct_answer = answer_choices[correct_index]  # set the correct answer to a variable
     await channel.send(question)  # send question
@@ -126,7 +138,7 @@ async def on_message(message):
 
     elif message.content in correct_answer and ")" in message.content:
         await message.channel.send(f"Correct, it's {correct_answer}!")
-        await next_question(current_playlist, message.channel)
+        await next_question(current_playlist, message.channel, message)
 
     await discord_client.process_commands(message)
     # https://discordpy.readthedocs.io/en/rewrite/faq.html#why-does-on-message-make-my-commands-stop-working
@@ -145,7 +157,7 @@ async def nextplaylist(ctx):
             current_playlist = Playlist(next(game_playlists_iterator), spotipy_client)
 
             await ctx.send(f"Next playlist coming up! Now playing... {current_playlist.name}!")
-            await next_question(current_playlist, ctx.message.channel)
+            await next_question(current_playlist, ctx.message.channel, ctx.message)
         except StopIteration:
             await ctx.send("You have played all playlists!")
 
@@ -175,14 +187,13 @@ async def user(ctx, *args):
         current_playlist = Playlist(next(game_playlists_iterator), spotipy_client)
         await ctx.send(f"We will start with... {current_playlist.name}!")
 
-        await next_question(current_playlist, ctx.message.channel)
+        await next_question(current_playlist, ctx.message.channel, ctx.message)
     except SpotifyException:  # Authentication failed.
         await ctx.send("Not a valid username!")
 
 
 @discord_client.command(pass_context=True)
 async def featured(ctx):
-    print("TRIGGERRRRR")
     global mode, current_playlist, game_playlists_iterator
     mode = "featured"
     featured_playlists = spotipy_client.featured_playlists()["playlists"]
@@ -195,7 +206,7 @@ async def featured(ctx):
     current_playlist = Playlist(next(game_playlists_iterator), spotipy_client)
     await ctx.send(f"We will start with... {current_playlist.name}!")
 
-    await next_question(current_playlist, ctx.message.channel)
+    await next_question(current_playlist, ctx.message.channel, ctx.message)
 
 
 @discord_client.command(pass_context=True)
@@ -205,10 +216,66 @@ async def playlist(ctx):
     playlist_uri = ctx.message.content.split(" ")[1]
     current_playlist = Playlist(spotipy_client.playlist(playlist_uri), spotipy_client)
     await ctx.send(f"Starting game on {current_playlist.name}!")
-    await next_question(current_playlist, ctx.message.channel)
+    await next_question(current_playlist, ctx.message.channel, ctx.message)
+
+
+async def join_voice_channel(ctx):
+    channel = ctx.author.voice.channel
+    await channel.connect()
+
+
+# @discord_client.command(pass_context=True)
+async def play(message, search_keyword):
+    # Connect to the user's voice channel if needed
+    try:
+        await join_voice_channel(message)
+    except ClientException:
+        pass
+
+    # if song already exists, delete it
+    try:
+        if os.path.isfile("song.mp3"):
+            os.remove("song.mp3")
+    except PermissionError:
+        return
+
+    # Get YouTube urls from search keyword
+    # https://www.codeproject.com/articles/873060/python-search-youtube-for-video
+    url = "https://www.youtube.com/results?search_query=" + search_keyword
+    url = requote_uri(url)  # replace spaces with %20, etc
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser').decode_contents()
+    search_results = re.findall(r'href="/watch\?v=(.{11})', soup)
+    #  print(search_results)  # ['60ItHLz5WEA', '60ItHLz5WEA', 'mIxlvVlOIS0', 'mIxlvVlOIS0'] etc
+    video_url = f"https://www.youtube.com/watch?v={search_results[0]}"  # get the first video
+
+    # download Youtube video
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([video_url])  # must be a list, not str
+
+    # Rename downloaded video to 'song.mp3'
+    for file in os.listdir("./"):
+        if file.endswith(".mp3"):
+            os.rename(file, 'song.mp3')
+            break
+
+    voice = discord.utils.get(discord_client.voice_clients, guild=message.guild)
+    try:
+        voice.play(discord.FFmpegPCMAudio("song.mp3"))
+    except ClientException:  # Already playing audio
+        voice.stop()
+        voice.play(discord.FFmpegPCMAudio("song.mp3"))
 
 discord_client.run(DISCORD_TOKEN)
-# https://discord.com/api/oauth2/authorize?client_id=715864951037755412&permissions=11264&scope=bot
+# https://discord.com/api/oauth2/authorize?client_id=715864951037755412&permissions=3148800&scope=bot
 
 # TODO: Add !skip command
 # TODO: Add !hint command
